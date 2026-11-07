@@ -4,3 +4,14 @@ node_modules/
 
 # IDE
 .idea/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
