@@ -1,0 +1,228 @@
+#version: '3.8'
+
+services:
+  # ==========================================
+  # INFRASTRUCTURE (POSTGRES, REDIS & NATS)
+  # ==========================================
+  postgres:
+    image: postgres:16-alpine
+    container_name: ai_business_postgres
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./migrations/create_schemas.sql:/docker-entrypoint-initdb.d/create_schemas.sql:ro
+    networks:
+      - ai_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  redis:
+    image: redis:7-alpine
+    container_name: ai_business_redis
+    ports:
+      - "${REDIS_PORT}:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - ai_network
+
+  nats:
+    image: nats:2.10-alpine
+    container_name: ai_business_nats
+    ports:
+      - "${NATS_PORT}:4222"
+      - "${NATS_MONITOR_PORT}:8222"
+    networks:
+      - ai_network
+
+  # ==========================================
+  # MIGRATIONS
+  # ==========================================
+  migrations:
+    image: migrate/migrate
+    container_name: ai_business_migrations
+    volumes:
+      - ./migrations:/migrations:ro
+    command: -path=/migrations -database "postgres://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}?sslmode=disable" up
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - ai_network
+
+  # ==========================================
+  # PYTHON MICROSERVICES (BACKEND)
+  # ==========================================
+  core-service:
+    build:
+      context: ./backend/core
+      dockerfile: Dockerfile
+    container_name: ai_business_core
+    ports:
+      - "${CORE_SERVICE_PORT}:8000"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379/0
+      - NATS_URL=nats://nats:4222
+      - ENV=${ENV}
+    volumes:
+      - ./backend/core:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      nats:
+        condition: service_started
+      migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    networks:
+      - ai_network
+
+  auth-service:
+    build:
+      context: ./backend/auth
+      dockerfile: Dockerfile
+    container_name: ai_business_auth
+    ports:
+      - "${AUTH_SERVICE_PORT}:8000"
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379/0
+      - NATS_URL=nats://nats:4222
+      - ENV=${ENV}
+    volumes:
+      - ./backend/auth:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      nats:
+        condition: service_started
+      migrations:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2)" ]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 5s
+    networks:
+      - ai_network
+
+
+  ai-service:
+    build:
+      context: ./backend/ai
+      dockerfile: Dockerfile
+    container_name: ai_business_ai
+    ports:
+      - "${AI_SERVICE_PORT}:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - NATS_URL=nats://nats:4222
+      - ENV=${ENV}
+    volumes:
+      - ./backend/ai:/app
+    depends_on:
+      redis:
+        condition: service_started
+      nats:
+        condition: service_started
+    networks:
+      - ai_network
+
+  # ==========================================
+  # FRONTEND
+  # ==========================================
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: ai_business_frontend
+    ports:
+      - "${FRONTEND_PORT}:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_AUTH_URL=http://localhost:${AUTH_SERVICE_PORT}
+      - VITE_API_CORE_URL=http://localhost:${CORE_SERVICE_PORT}
+    depends_on:
+      - auth-service
+      - core-service
+      - ai-service
+    networks:
+      - ai_network
+
+  # ==========================================
+  # NGINX & MONITORING
+  # ==========================================
+  # nginx:
+  #   image: nginx:alpine
+  #   container_name: ai_business_nginx
+  #   ports:
+  #     - "80:80"
+  #     - "443:443"
+  #   volumes:
+  #     - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+  #     - ./nginx/conf.d:/etc/nginx/conf.d:ro
+  #   depends_on:
+  #     - frontend
+  #     - auth-service
+  #     - core-service
+  #   networks:
+  #     - ai_network
+
+  # prometheus:
+  #   image: prom/prometheus:latest
+  #   container_name: ai_business_prometheus
+  #   ports:
+  #     - "9090:9090"
+  #   volumes:
+  #     - ./prometheus/prometheus.yml:/etc/prometheus/yml:ro
+  #     - prometheus_data:/prometheus
+  #   networks:
+  #     - ai_network
+
+  # grafana:
+  #   image: grafana/grafana:latest
+  #   container_name: ai_business_grafana
+  #   ports:
+  #     - "3000:3000"
+  #   volumes:
+  #     - grafana_data:/var/lib/grafana
+  #   environment:
+  #     - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD}
+  #   depends_on:
+  #     - prometheus
+  #   networks:
+  #     - ai_network
+
+# ==========================================
+# VOLUMES & NETWORKS
+# ==========================================
+volumes:
+  postgres_data:
+  redis_data:
+  # prometheus_data:
+  # grafana_data:
+
+networks:
+  ai_network:
+    driver: bridge
