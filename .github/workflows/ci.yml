@@ -27,6 +27,7 @@ jobs:
           python-version: "3.12"
           cache: pip
           cache-dependency-path: |
+            backend/ai/requirements.txt
             backend/auth/requirements.txt
             backend/core/requirements.txt
 

@@ -130,19 +130,17 @@ services:
       context: ./backend/ai
       dockerfile: Dockerfile
     container_name: ai_business_ai
-    expose:
-      - "8000"
     environment:
-      - REDIS_URL=redis://redis:6379/0
+      - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
       - NATS_URL=nats://nats:4222
       - ENV=${ENV}
-    volumes:
-      - ./backend/ai:/app
     depends_on:
-      redis:
-        condition: service_started
+      postgres:
+        condition: service_healthy
       nats:
         condition: service_started
+      migrations:
+        condition: service_completed_successfully
     networks:
       - ai_network
 
