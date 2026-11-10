@@ -9,7 +9,12 @@ function PageHeader() {
                 </div>
             </div>
 
-            <span className="header-caption">Умные решения для бизнеса</span>
+            <div className="header-actions">
+                <span className="header-caption">Умные решения для бизнеса</span>
+                <a className="header-chat-link" href="/chat">
+                    AI-ассистент
+                </a>
+            </div>
         </header>
     );
 }
