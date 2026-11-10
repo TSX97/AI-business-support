@@ -58,7 +58,7 @@ services:
       - ai_network
 
   # ==========================================
-  # PYTHON MICROSERVICES (BACKEND)
+  # BACKEND SERVICES
   # ==========================================
   core-service:
     build:
@@ -69,22 +69,17 @@ services:
       - "8081"
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
-      - REDIS_URL=redis://redis:6379/0
       - NATS_URL=nats://nats:4222
       - ENV=${ENV}
-    volumes:
-      - ./backend/core:/app
     depends_on:
       postgres:
         condition: service_healthy
-      redis:
-        condition: service_started
       nats:
         condition: service_started
       migrations:
         condition: service_completed_successfully
     healthcheck:
-      test: [ "CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8081/health', timeout=2)" ]
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost:8081/health"]
       interval: 10s
       timeout: 3s
       retries: 3

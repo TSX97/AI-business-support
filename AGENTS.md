@@ -14,16 +14,12 @@ The intended request and service flow is documented in [docs/architecture.md](do
 
 - `frontend/` — web client.
 - `backend/auth/` — Python authentication service.
-- `backend/core/` — intended Go core service.
+- `backend/core/` — Go core service.
 - `backend/ai/` — Python AI service.
 - `migrations/` — PostgreSQL schema migrations.
 - `nginx/` — reverse proxy and TLS configuration.
 - `docs/` — architecture and API documentation.
 - `docker-compose.yml` — local infrastructure and service orchestration.
-
-## Important implementation gap
-
-The intended stack above does not fully match the current scaffold. `backend/core/` currently contains a Python/FastAPI placeholder and Python Docker configuration, and `docker-compose.yml` has Python-specific Core health-check/configuration. The frontend manifest currently does not declare Redux. Treat Go for Core and Redux for the frontend as the target architecture; do not extend the mismatched scaffolding as though it were the intended implementation. When changing either area, update the service configuration and relevant documentation consistently.
 
 ## Development practices
 

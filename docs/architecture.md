@@ -42,4 +42,4 @@ PostgreSQL is shared infrastructure, but each service should access data through
 
 ## Current scaffold status
 
-The diagram represents the target design, not the current implementation in every detail. In this checkout, `backend/core/` is still a Python/FastAPI placeholder, the compose health check and Docker configuration for Core are Python-oriented, and the frontend package manifest does not currently list Redux. Align those implementation details with the target architecture when implementing the services.
+Core is implemented in Go, while Auth and AI are implemented in Python. The frontend uses Redux for client-side state. Backend functionality is still under active development; refer to the frontend API documentation for the current endpoint status.
