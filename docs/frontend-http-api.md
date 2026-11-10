@@ -30,6 +30,16 @@ The current Core service only exposes placeholder `/`, `/health`, and `POST
 screen reports that the feature is not connected when the server returns 404;
 it does not generate or display mock AI answers.
 
+## Local chat history
+
+The frontend supports creating and switching between multiple conversations.
+Until Core provides an API for listing and retrieving chat history, the
+frontend stores conversation titles, messages, the selected conversation, and
+the associated Core chat IDs in this browser's `localStorage`. This is a
+device-local prototype: it does not synchronize across browsers or devices,
+and clearing site data removes the saved history. No authentication tokens are
+stored as part of chat history.
+
 ## Authentication request details
 
 Both authentication requests use the `Content-Type: application/json` header.
