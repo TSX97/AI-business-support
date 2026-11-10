@@ -1,0 +1,243 @@
+openapi: 3.1.0
+info:
+  title: Auth Service API
+  version: 1.0.0
+  description: |
+    API for user registration, authentication, and service health.
+
+    The public API is served through NGINX over HTTPS. NGINX removes the
+    `/api/auth` prefix before forwarding authentication requests to the Auth
+    Service over HTTP. The health endpoint is available at `/health`.
+servers:
+  - url: https://localhost
+    description: Public API through NGINX
+tags:
+  - name: Authentication
+  - name: Health
+paths:
+  /api/auth/register:
+    post:
+      tags:
+        - Authentication
+      operationId: registerUser
+      summary: Register a user
+      description: Creates an account and starts an authenticated session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RegisterRequest"
+            example:
+              name: Pavel
+              email: user@example.com
+              password: secure_password
+      responses:
+        "201":
+          description: User registered successfully.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthenticationResponse"
+              example:
+                status: success
+                message: User registered successfully
+                user:
+                  id: 1
+                  name: Pavel
+                  email: user@example.com
+                access_token: "<JWT_TOKEN>"
+                token_type: Bearer
+                expires_in: 900
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "409":
+          description: A user with this email already exists.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: USER_ALREADY_EXISTS
+                message: User with this email already exists
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /api/auth/login:
+    post:
+      tags:
+        - Authentication
+      operationId: authenticateUser
+      summary: Authenticate a user
+      description: Verifies user credentials and starts an authenticated session.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+            example:
+              email: user@example.com
+              password: secure_password
+      responses:
+        "200":
+          description: Authentication successful.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthenticationResponse"
+              example:
+                status: success
+                message: Authentication successful
+                user:
+                  id: 1
+                  name: Pavel
+                  email: user@example.com
+                access_token: "<JWT_TOKEN>"
+                token_type: Bearer
+                expires_in: 900
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          description: Invalid email or password.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+              example:
+                error: INVALID_CREDENTIALS
+                message: Invalid email or password
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /health:
+    get:
+      tags:
+        - Health
+      operationId: getHealth
+      summary: Check service health
+      responses:
+        "200":
+          description: The service is healthy.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+              example:
+                status: healthy
+
+components:
+  schemas:
+    RegisterRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - name
+        - email
+        - password
+      properties:
+        name:
+          type: string
+          description: User's display name.
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+          writeOnly: true
+    LoginRequest:
+      type: object
+      additionalProperties: false
+      required:
+        - email
+        - password
+      properties:
+        email:
+          type: string
+          format: email
+        password:
+          type: string
+          format: password
+          writeOnly: true
+    AuthenticationResponse:
+      type: object
+      required:
+        - status
+        - message
+        - user
+        - access_token
+        - token_type
+        - expires_in
+      properties:
+        status:
+          type: string
+          const: success
+        message:
+          type: string
+        user:
+          $ref: "#/components/schemas/User"
+        access_token:
+          type: string
+          description: JWT access token.
+        token_type:
+          type: string
+          const: Bearer
+        expires_in:
+          type: integer
+          description: Token lifetime in seconds.
+          example: 900
+    User:
+      type: object
+      required:
+        - id
+        - name
+        - email
+      properties:
+        id:
+          type: integer
+        name:
+          type: string
+        email:
+          type: string
+          format: email
+    ErrorResponse:
+      type: object
+      required:
+        - message
+      properties:
+        error:
+          type: string
+        message:
+          type: string
+    HealthResponse:
+      type: object
+      required:
+        - status
+      properties:
+        status:
+          type: string
+          const: healthy
+  responses:
+    BadRequest:
+      description: Invalid JSON or request data.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    InternalServerError:
+      description: An unexpected internal service error occurred.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ServiceUnavailable:
+      description: A required dependency, such as PostgreSQL or Redis, is unavailable.
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
