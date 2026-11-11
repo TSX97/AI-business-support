@@ -1,12 +1,8 @@
+
 fastapi
 uvicorn[standard]
 sqlalchemy[asyncio]
 psycopg[binary]
-redis
+pydantic[email]
 pwdlib[argon2]
 PyJWT
-pydantic-settings
-prometheus-client
-pytest
-pytest-asyncio
-httpx
