@@ -1,160 +1,173 @@
-# Core Service API: MVP-ready contract
+# Core Service API: MVP contract
 
-This document is the tightened MVP contract for the Go Core Service. It keeps the original business flow, but makes the fields, IDs, auth assumptions and response shapes much more concrete.
+This is the MVP contract for the Go Core Service. It defines the HTTP fields and behavior for chats, messages, businesses, and business membership. The matching machine-readable contract is [core-service.openapi.yaml](./core-service.openapi.yaml).
 
-## Core principles
+## Conventions and IDs
 
-1. Use `uuid` as the canonical ID for chats, messages and businesses.
-2. Keep `chat_name` as a human-friendly display name, but never as the primary lookup key in production logic.
-3. All private actions require a valid JWT or session cookie.
-4. `user_id` can be present in the request body for MVP simplicity, but it must be checked against the authenticated session.
-5. The Core Service persists data in PostgreSQL and pushes AI work to NATS.
+- Every entity ID (`user_id`, `chat_id`, `message_id`, `business_id`) is a positive integer.
+- In PostgreSQL, store these IDs and their foreign keys as `BIGINT`; generate primary keys with `GENERATED ... AS IDENTITY`.
+- In Go, represent IDs as `int64`; send them in JSON as numbers, not quoted strings.
+- Do not use chat or business names as identifiers. Names are mutable display values; IDs are stable.
+- Timestamps are ISO 8601 UTC strings, for example `2026-11-11T10:00:00Z`.
 
-## Auth/session model
+All routes require `Authorization: Bearer <JWT>` (or the configured authenticated session cookie). For this MVP, requests also include `user_id`. The server must validate the token/session and require that the request's `user_id` equals the authenticated user's ID. A mismatch returns `403 Forbidden`; missing or invalid authentication returns `401 Unauthorized`.
 
-All endpoints below require:
-
-- `Authorization: Bearer <jwt>`
-- or a valid authenticated session cookie
-
-The service must validate the session before any chat/business operation.
-
-For MVP, the server rule is:
-
-- `user_id` from the request body must match the authenticated user
-- otherwise return `401` or `403`
-
-This keeps the API easy to test and still safe enough for the first version.
-
-## Field standards
-
-- `user_id`: UUID string
-- `chat_id`: UUID string
-- `business_id`: UUID string
-- `message_id`: UUID string
-- `chat_name`: 1-80 characters, trimmed, unique per user
-- `business_name`: 1-120 characters
-- `message_content`: 1-20000 characters
-- `description`: optional string, max length 500/1000 depending on entity
-- `metadata`: JSON object, optional
-- `business_data`: JSON object, optional
-
-## Response conventions
-
-- `Content-Type: application/json`
-- success objects follow:
+Success responses use JSON and generally have this shape:
 
 ```json
 {
   "success": true,
-  "data": {
-    "...": "..."
-  }
+  "data": {}
 }
 ```
 
-- validation or permission failures follow:
+Errors use:
 
 ```json
 {
   "success": false,
   "error": {
     "code": "invalid_request",
-    "message": "chat_id is required when chat_name is missing",
-    "details": {}
+    "message": "chat_id must be a positive integer"
   }
 }
 ```
 
-## Endpoint summary
+Common statuses: `400` invalid input, `401` missing/invalid authentication, `403` not permitted, `404` resource missing or not accessible, `409` conflicting state, `500` unexpected server error.
+
+## Endpoint overview
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/chat` | Create a new chat |
-| `GET` | `/chat` | Read a chat and messages with pagination |
+| `GET` | `/health` | Check that the Core Service process is running |
+| `POST` | `/chat` | Create a chat |
+| `GET` | `/chat` | Read a chat and paginated messages |
 | `PUT` | `/chat` | Rename a chat |
-| `DELETE` | `/chat` | Delete a chat |
-| `POST` | `/chat/message` | Save a user message and queue AI work |
+| `DELETE` | `/chat` | Delete a chat and its messages |
+| `GET` | `/chats` | List the authenticated user's chats |
+| `POST` | `/chat/message` | Save a message and queue AI work |
+| `GET` | `/chat/message/{message_id}/events` | Receive AI response events over SSE |
 | `POST` | `/business` | Create a business |
-| `POST` | `/business/member` | Add a user to a business |
-| `DELETE` | `/business/member` | Remove a user from a business |
+| `GET` | `/business` | List businesses owned by or shared with the user |
+| `PUT` | `/business` | Replace editable business fields |
+| `DELETE` | `/business` | Delete a business and its memberships |
+| `POST` | `/business/member` | Add a business member |
+| `DELETE` | `/business/member` | Remove a business member |
 
-## Chat API
+## Health check
+
+### `GET /health`
+
+Unauthenticated liveness endpoint for Docker health checks and orchestration. It only confirms that the Core Service process can respond; it does not prove that PostgreSQL or NATS is reachable.
+
+Response `200 OK`:
+
+```json
+{
+  "status": "healthy"
+}
+```
+
+## Chat
 
 ### `POST /chat`
 
-Create a chat for the authenticated user.
+Creates a chat owned by the authenticated user. `chat_name` is 1-80 characters; it must be trimmed and unique per owner. `description` is optional (maximum 500 characters); `metadata` is an optional JSON object.
 
 Request:
 
 ```json
 {
-  "user_id": "11111111-1111-4111-8111-111111111111",
+  "user_id": 42,
   "chat_name": "sales-ops",
   "description": "Q4 sales support workspace",
   "metadata": {
-    "company_id": "22222222-2222-4222-8222-222222222222",
     "context": "support"
   }
 }
 ```
 
-Response `201`:
+Response `201 Created`:
 
 ```json
 {
   "success": true,
   "data": {
-    "chat_id": "33333333-3333-4333-8333-333333333333",
-    "user_id": "11111111-1111-4111-8111-111111111111",
+    "chat_id": 103,
+    "user_id": 42,
     "chat_name": "sales-ops",
     "description": "Q4 sales support workspace",
-    "created_at": "2026-11-10T12:00:00Z",
-    "updated_at": "2026-11-10T12:00:00Z"
+    "created_at": "2026-11-11T10:00:00Z",
+    "updated_at": "2026-11-11T10:00:00Z"
+  }
+}
+```
+
+### `GET /chats`
+
+Lists chats owned by the authenticated user, newest activity first. Uses the same cursor pagination convention as `GET /chat`; `limit` defaults to 25 and must be 1-100. `last_message_preview` is truncated to at most 200 characters and may be `null` for an empty chat.
+
+Example:
+
+```http
+GET /chats?user_id=42&limit=25
+```
+
+Response `200 OK`:
+
+```json
+{
+  "success": true,
+  "data": {
+    "chats": [
+      {
+        "chat_id": 103,
+        "user_id": 42,
+        "chat_name": "sales-ops",
+        "description": "Q4 sales support workspace",
+        "created_at": "2026-11-11T10:00:00Z",
+        "updated_at": "2026-11-11T10:02:00Z",
+        "last_message_preview": "How can we reduce churn?",
+        "last_message_at": "2026-11-11T10:02:00Z"
+      }
+    ],
+    "next_cursor": null
   }
 }
 ```
 
 ### `GET /chat`
 
-Load a chat and its messages with pagination.
+Requires query parameters `user_id` and `chat_id`. `limit` defaults to 25 and must be 1-100. `cursor` is opaque and, if present, comes from the previous response. Messages are returned oldest-to-newest within the selected page; pages continue toward older messages.
 
-Query params:
-
-- `user_id` required
-- `chat_id` optional if `chat_name` is provided
-- `chat_name` optional if `chat_id` is provided
-- `limit` default 25, max 100
-- `cursor` optional opaque pagination cursor
-
-Example request:
+Example:
 
 ```http
-GET /chat?user_id=11111111-1111-4111-8111-111111111111&chat_id=33333333-3333-4333-8333-333333333333&limit=25
+GET /chat?user_id=42&chat_id=103&limit=25
 ```
 
-Response `200`:
+Response `200 OK`:
 
 ```json
 {
   "success": true,
   "data": {
     "chat": {
-      "chat_id": "33333333-3333-4333-8333-333333333333",
-      "user_id": "11111111-1111-4111-8111-111111111111",
+      "chat_id": 103,
+      "user_id": 42,
       "chat_name": "sales-ops",
       "description": "Q4 sales support workspace",
-      "created_at": "2026-11-10T12:00:00Z",
-      "updated_at": "2026-11-10T12:00:00Z"
+      "created_at": "2026-11-11T10:00:00Z",
+      "updated_at": "2026-11-11T10:00:00Z"
     },
     "messages": [
       {
-        "message_id": "44444444-4444-4444-8444-444444444444",
-        "chat_id": "33333333-3333-4333-8333-333333333333",
-        "user_id": "11111111-1111-4111-8111-111111111111",
+        "message_id": 9001,
+        "chat_id": 103,
+        "user_id": 42,
         "role": "user",
-        "content": "We lost 8% of customers this quarter.",
-        "created_at": "2026-11-10T12:01:00Z"
+        "content": "How can we reduce churn?",
+        "created_at": "2026-11-11T10:01:00Z"
       }
     ],
     "next_cursor": null
@@ -164,27 +177,26 @@ Response `200`:
 
 ### `PUT /chat`
 
-Rename a chat.
+Renames a chat. The new name is 1-80 characters and unique for that user.
 
 Request:
 
 ```json
 {
-  "user_id": "11111111-1111-4111-8111-111111111111",
-  "chat_id": "33333333-3333-4333-8333-333333333333",
-  "new_chat_name": "sales-ops-q4",
-  "description": "Updated Q4 support workspace"
+  "user_id": 42,
+  "chat_id": 103,
+  "new_chat_name": "sales-ops-q4"
 }
 ```
 
-Response `200`:
+Response `200 OK`:
 
 ```json
 {
   "success": true,
   "message": "chat renamed successfully",
   "data": {
-    "chat_id": "33333333-3333-4333-8333-333333333333",
+    "chat_id": 103,
     "chat_name": "sales-ops-q4"
   }
 }
@@ -192,99 +204,216 @@ Response `200`:
 
 ### `DELETE /chat`
 
-Delete a chat and its messages.
+Deletes the chat and its messages. The MVP implementation should perform this atomically (for example, with a foreign key `ON DELETE CASCADE`).
 
 Request:
 
 ```json
 {
-  "user_id": "11111111-1111-4111-8111-111111111111",
-  "chat_id": "33333333-3333-4333-8333-333333333333"
+  "user_id": 42,
+  "chat_id": 103
 }
 ```
 
-Response `200`:
+Response `200 OK`:
 
 ```json
 {
   "success": true,
   "message": "chat deleted successfully",
   "data": {
-    "chat_id": "33333333-3333-4333-8333-333333333333"
+    "chat_id": 103
   }
 }
 ```
 
-## Chat message API
+## Messages and AI queue
 
 ### `POST /chat/message`
 
-Persist a message and queue it for AI processing.
+`message_content` must contain 1-20,000 characters. Core verifies that the caller owns the chat, persists the user message, publishes the job to NATS JetStream, and returns `202 Accepted`. The response means the job was accepted for processing, not that the AI reply is ready.
 
 Request:
 
 ```json
 {
-  "user_id": "11111111-1111-4111-8111-111111111111",
-  "chat_id": "33333333-3333-4333-8333-333333333333",
+  "user_id": 42,
+  "chat_id": 103,
   "message_content": "We lost 8% of customers this quarter. What should we do?",
   "metadata": {
-    "company_id": "22222222-2222-4222-8222-222222222222",
     "locale": "ru"
   }
 }
 ```
 
-Response `202`:
+Response `202 Accepted`:
 
 ```json
 {
   "success": true,
   "data": {
-    "message_id": "55555555-5555-4555-8555-555555555555",
-    "chat_id": "33333333-3333-4333-8333-333333333333",
+    "message_id": 9002,
+    "chat_id": 103,
     "status": "queued",
-    "accepted_at": "2026-11-10T12:03:00Z"
+    "accepted_at": "2026-11-11T10:02:00Z"
   }
 }
 ```
 
-This endpoint must:
-
-1. validate session
-2. verify the user belongs to the chat
-3. insert the message in PostgreSQL
-4. publish a task to NATS JetStream
-5. return `202 Accepted` immediately
-
-NATS payload contract for MVP:
+MVP NATS JetStream subject: `core.chat.message.created`. Payload:
 
 ```json
 {
   "event_type": "chat.message.created",
-  "message_id": "55555555-5555-4555-8555-555555555555",
-  "chat_id": "33333333-3333-4333-8333-333333333333",
-  "user_id": "11111111-1111-4111-8111-111111111111",
-  "business_id": "22222222-2222-4222-8222-222222222222",
-  "content": "We lost 8%...",
-  "request_id": "a8cb6f7d-4dd0-450b-9e62-bc1a0d3ad519",
-  "created_at": "2026-11-10T12:03:00Z"
+  "message_id": 9002,
+  "chat_id": 103,
+  "user_id": 42,
+  "content": "We lost 8% of customers this quarter. What should we do?",
+  "request_id": "req-01JCA8Y8C4K0M0K9D5T6H7J8K9",
+  "created_at": "2026-11-11T10:02:00Z"
 }
 ```
 
-The AI worker then processes the message and returns a result via the same pipeline or a subsequent API callback.
+IDs in the NATS payload are JSON integers too. NATS delivery must be acknowledged by the consumer after successful processing; retries and duplicate delivery must not create duplicate assistant messages. The AI response is delivered to the client by the SSE endpoint below.
 
-## Business API
+### `GET /chat/message/{message_id}/events` (SSE)
+
+The client uses the `message_id` returned by `POST /chat/message` to open an authenticated Server-Sent Events stream. The stream delivers the AI response as it is generated:
+
+```http
+GET /chat/message/9002/events?user_id=42
+Accept: text/event-stream
+Authorization: Bearer <JWT>
+```
+
+Successful response headers:
+
+```http
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+X-Accel-Buffering: no
+```
+
+The stream uses these events:
+
+- `message.status` — initial state (`queued` or `processing`)
+- `message.snapshot` — current accumulated response when the stream connects/reconnects
+- `message.delta` — next response text fragment, with an increasing per-message `sequence`
+- `message.completed` — final assistant message is saved; includes its `assistant_message_id` and full content; the server closes the stream
+- `message.failed` — processing failed; includes a stable error code and safe user-facing message; the server closes the stream
+
+Example stream:
+
+```text
+event: message.status
+data: {"message_id":9002,"status":"processing"}
+
+event: message.snapshot
+data: {"message_id":9002,"assistant_message_id":9003,"status":"processing","content":"","next_sequence":1}
+
+event: message.delta
+data: {"message_id":9002,"sequence":1,"delta":"Start by identifying "}
+
+event: message.delta
+data: {"message_id":9002,"sequence":2,"delta":"the customers most likely to churn."}
+
+event: message.completed
+data: {"message_id":9002,"assistant_message_id":9003,"status":"completed","content":"Start by identifying the customers most likely to churn."}
+```
+
+SSE framing requires a blank line after every event. While waiting for the AI, Core sends a comment heartbeat periodically (for example `: keep-alive`) so proxies do not close an idle connection. If processing has already finished before the stream is opened, Core sends `message.snapshot` and `message.completed` immediately. On reconnect, Core sends the current persisted snapshot and then any later deltas; the MVP does not promise replay of every delta from before the disconnect. The canonical full answer is always available as an assistant message via `GET /chat`.
+
+Native browser `EventSource` cannot attach an `Authorization` header. The frontend should use `fetch` with the Bearer token and read the response body as a stream (or use an authenticated same-site cookie if the auth service supports that flow). Configure NGINX for this route with response buffering disabled, pass through `X-Accel-Buffering: no`, and set a sufficiently long read timeout. The Core handler must flush each event.
+
+Errors discovered before sending the `200` SSE headers use the normal JSON error response (`401`, `404`, etc.). After streaming starts, HTTP status can no longer change; report processing errors using `message.failed`.
+
+AI response events are published by the AI service to the NATS JetStream subject `ai.chat.message.events`, keyed by `message_id`. MVP event payloads:
+
+```json
+{
+  "event_type": "message.delta",
+  "message_id": 9002,
+  "sequence": 1,
+  "delta": "Start by identifying ",
+  "created_at": "2026-11-11T10:02:01Z"
+}
+```
+
+```json
+{
+  "event_type": "message.completed",
+  "message_id": 9002,
+  "sequence": 2,
+  "content": "Start by identifying the customers most likely to churn.",
+  "created_at": "2026-11-11T10:02:02Z"
+}
+```
+
+For failures, the payload is:
+
+```json
+{
+  "event_type": "message.failed",
+  "message_id": 9002,
+  "sequence": 2,
+  "error": {
+    "code": "ai_processing_failed",
+    "message": "The assistant could not complete this response."
+  },
+  "created_at": "2026-11-11T10:02:02Z"
+}
+```
+
+Core consumes these events, persists the assistant response/status in PostgreSQL, and forwards them to the matching open SSE stream. Sequence numbers let Core ignore duplicate or out-of-order chunks. The AI service must publish `message.completed` only after all deltas; failures publish `message.failed`. If Core is horizontally scaled, stream delivery must be routed to the Core instance holding the HTTP connection (for example via a shared NATS consumer/fan-out design); a process-local channel alone is not sufficient.
+
+## Business
+
+### `GET /business`
+
+Lists businesses the user owns or belongs to, most recently updated first. Uses cursor pagination; `limit` defaults to 25 and must be 1-100. `user_id` must match the authenticated user. Each returned `BusinessRecord.user_id` is the business owner's ID.
+
+Example:
+
+```http
+GET /business?user_id=42&limit=25
+```
+
+Response `200 OK`:
+
+```json
+{
+  "success": true,
+  "data": {
+    "businesses": [
+      {
+        "business_id": 501,
+        "user_id": 42,
+        "business_name": "Northwind Labs",
+        "description": "B2B SaaS company",
+        "business_data": {
+          "industry": "saas",
+          "employees": 32
+        },
+        "created_at": "2026-11-11T10:03:00Z",
+        "updated_at": "2026-11-11T10:03:00Z"
+      }
+    ],
+    "next_cursor": null
+  }
+}
+```
 
 ### `POST /business`
 
-Create a business record. MVP assumes one owner and many members.
+Creates a business and makes the authenticated user its owner. `business_name` is 1-120 characters; `description` is optional (maximum 1,000 characters); `business_data` is an optional JSON object that defaults to `{}`.
 
 Request:
 
 ```json
 {
-  "user_id": "11111111-1111-4111-8111-111111111111",
+  "user_id": 42,
   "business_name": "Northwind Labs",
   "description": "B2B SaaS company",
   "business_data": {
@@ -296,14 +425,14 @@ Request:
 }
 ```
 
-Response `201`:
+Response `201 Created`:
 
 ```json
 {
   "success": true,
   "data": {
-    "business_id": "66666666-6666-4666-8666-666666666666",
-    "user_id": "11111111-1111-4111-8111-111111111111",
+    "business_id": 501,
+    "user_id": 42,
     "business_name": "Northwind Labs",
     "description": "B2B SaaS company",
     "business_data": {
@@ -312,82 +441,98 @@ Response `201`:
       "employees": 32,
       "region": "europe"
     },
-    "created_at": "2026-11-10T12:04:00Z",
-    "updated_at": "2026-11-10T12:04:00Z"
+    "created_at": "2026-11-11T10:03:00Z",
+    "updated_at": "2026-11-11T10:03:00Z"
+  }
+}
+```
+
+### `PUT /business`
+
+Replaces the business's editable fields. All fields shown are required so a client cannot accidentally clear data by omitting it. To clear `description`, send `null`; to clear structured data, send `{}`. Only the business owner may update it. The owner ID itself cannot be changed through this endpoint.
+
+Request:
+
+```json
+{
+  "user_id": 42,
+  "business_id": 501,
+  "business_name": "Northwind Group",
+  "description": null,
+  "business_data": {
+    "industry": "saas",
+    "employees": 35
+  }
+}
+```
+
+Response `200 OK`: same `BusinessResponse` shape as `POST /business`, containing the updated record and its new `updated_at`.
+
+### `DELETE /business`
+
+Deletes the business and its membership rows. It does not delete chats or messages. Only the owner may delete the business.
+
+Request:
+
+```json
+{
+  "user_id": 42,
+  "business_id": 501
+}
+```
+
+Response `200 OK`:
+
+```json
+{
+  "success": true,
+  "message": "business deleted successfully",
+  "data": {
+    "business_id": 501
   }
 }
 ```
 
 ### `POST /business/member`
 
-Add a member to a business.
+Adds a user to the business. Only the business owner can add members in the MVP. The role defaults to `member`; `admin` may be assigned, but does not grant owner-only business update/delete permissions.
 
 Request:
 
 ```json
 {
-  "user_id": "11111111-1111-4111-8111-111111111111",
-  "business_id": "66666666-6666-4666-8666-666666666666",
-  "member_user_id": "77777777-7777-4777-8777-777777777777",
+  "user_id": 42,
+  "business_id": 501,
+  "member_user_id": 77,
   "role": "member"
 }
 ```
 
-Rules for MVP:
-
-- only `user_id` who owns the business can add members
-- `role` is optional and defaults to `member`
-- admin role can be added later
+Adding an existing member returns `409 Conflict`; a non-existent business or target user returns `404 Not Found`.
 
 ### `DELETE /business/member`
 
-Remove a member from a business.
+Removes a member. Only the owner can remove other members. The owner cannot remove themselves through this endpoint; delete the business to remove the owner relationship.
 
 Request:
 
 ```json
 {
-  "user_id": "11111111-1111-4111-8111-111111111111",
-  "business_id": "66666666-6666-4666-8666-666666666666",
-  "member_user_id": "77777777-7777-4777-8777-777777777777"
+  "user_id": 42,
+  "business_id": 501,
+  "member_user_id": 77
 }
 ```
 
-Response `200`:
+Response `200 OK`:
 
 ```json
 {
   "success": true,
   "message": "member removed successfully",
   "data": {
-    "business_id": "66666666-6666-4666-8666-666666666666",
-    "member_user_id": "77777777-7777-4777-8777-777777777777"
+    "business_id": 501,
+    "member_user_id": 77
   }
 }
 ```
-
-## What is MVP-ready here
-
-This version is now good enough to start implementation because it fixes the major unstable points:
-
-- IDs are explicit and consistent (`uuid`)
-- resources have clear field names
-- `chat_name` is no longer the sole identity key
-- NATS payload shape is defined
-- authorization is explicit
-- business member rules are stated simply
-- JSON examples are concrete and easy to test
-
-## What still needs to be decided before production
-
-- whether `user_id` in the body stays for MVP or is removed after auth middleware is fully enforced
-- whether all writes should use path params instead of JSON bodies for some endpoints
-- whether the AI result should be returned via websocket, SSE, or a second polling endpoint
-- whether members need role-based permissions beyond owner/admin/member
-- whether chats can belong to multiple businesses or only one business
-
-## Final assessment
-
-This contract is now around `8/10` as an MVP draft.
-
-It is not yet production-grade, but it is strong enough to start building the first working Go Core service with PostgreSQL + NATS and a junior developer can implement it without guessing the main shapes and contracts.
