@@ -10,7 +10,7 @@ This is the MVP contract for the Go Core Service. It defines the HTTP fields and
 - Do not use chat or business names as identifiers. Names are mutable display values; IDs are stable.
 - Timestamps are ISO 8601 UTC strings, for example `2026-11-11T10:00:00Z`.
 
-All routes require `Authorization: Bearer <JWT>` (or the configured authenticated session cookie). For this MVP, requests also include `user_id`. The server must validate the token/session and require that the request's `user_id` equals the authenticated user's ID. A mismatch returns `403 Forbidden`; missing or invalid authentication returns `401 Unauthorized`.
+The intended API-wide auth scheme is `Authorization: Bearer <JWT>` (or the configured authenticated session cookie). The currently implemented chat routes use the Auth/Core Redis session contract instead: they require `user_id` and `X-Session-ID` (except `POST /chat`, which currently accepts `session_id` in its JSON body). Core validates `session:<session_id> -> <user_id>`; a mismatch returns `403 Forbidden`, and a missing/expired session returns `401 Unauthorized`.
 
 Success responses use JSON and generally have this shape:
 
@@ -41,9 +41,9 @@ Common statuses: `400` invalid input, `401` missing/invalid authentication, `403
 |---|---|---|
 | `GET` | `/health` | Check that the Core Service process is running |
 | `POST` | `/chat` | Create a chat |
-| `GET` | `/chat` | Read a chat and paginated messages |
-| `PUT` | `/chat` | Rename a chat |
-| `DELETE` | `/chat` | Delete a chat and its messages |
+| `GET` | `/chat/{id}` | Read a chat after validating the session |
+| `PUT` | `/chat/{id}` | Rename a chat |
+| `DELETE` | `/chat/{id}` | Delete a chat and its messages |
 | `GET` | `/chats` | List the authenticated user's chats |
 | `POST` | `/chat/message` | Save a message and queue AI work |
 | `GET` | `/chat/message/{message_id}/events` | Receive AI response events over SSE |
@@ -72,20 +72,27 @@ Response `200 OK`:
 
 ### `POST /chat`
 
-Creates a chat owned by the authenticated user. `chat_name` is 1-80 characters; it must be trimmed and unique per owner. `description` is optional (maximum 500 characters); `metadata` is an optional JSON object.
+Creates a chat owned by the user. The request must include `user_id`, `session_id`, and `chat_name`. Core checks Redis for key `session:<session_id>` and requires its value to equal the decimal `user_id`; missing/expired session returns `401`, and a session belonging to another user returns `403`. `chat_name` is trimmed and must contain 1-80 characters. Core stores the name in the existing `core.chats.title` column.
 
 Request:
 
 ```json
 {
   "user_id": 42,
-  "chat_name": "sales-ops",
-  "description": "Q4 sales support workspace",
-  "metadata": {
-    "context": "support"
-  }
+  "session_id": "session-abc",
+  "chat_name": "sales-ops"
 }
 ```
+
+Redis session entry:
+
+```text
+Key:   session:session-abc
+Value: 42
+TTL:   set by Auth Service; expired keys are treated as invalid sessions
+```
+
+After confirming the Redis value matches `user_id`, Core inserts `user_id` and `chat_name` into `core.chats.user_id` and `core.chats.title`, then reads the generated `id` and `created_at`.
 
 Response `201 Created`:
 
@@ -96,21 +103,20 @@ Response `201 Created`:
     "chat_id": 103,
     "user_id": 42,
     "chat_name": "sales-ops",
-    "description": "Q4 sales support workspace",
-    "created_at": "2026-11-11T10:00:00Z",
-    "updated_at": "2026-11-11T10:00:00Z"
+    "created_at": "2026-11-11T10:00:00Z"
   }
 }
 ```
 
 ### `GET /chats`
 
-Lists chats owned by the authenticated user, newest activity first. Uses the same cursor pagination convention as `GET /chat`; `limit` defaults to 25 and must be 1-100. `last_message_preview` is truncated to at most 200 characters and may be `null` for an empty chat.
+Lists chats owned by the authenticated user, newest numeric chat ID first. Requires `user_id` and `X-Session-ID`; the session is validated in Redis before querying PostgreSQL. `limit` defaults to 25 and must be 1-100. `cursor` is the chat ID of the last item in the previous page; the next page contains chats with a lower ID. `last_message_preview` is truncated to at most 200 characters and may be `null` for an empty chat.
 
 Example:
 
 ```http
 GET /chats?user_id=42&limit=25
+X-Session-ID: session-abc
 ```
 
 Response `200 OK`:
@@ -123,10 +129,9 @@ Response `200 OK`:
       {
         "chat_id": 103,
         "user_id": 42,
+        "company_id": null,
         "chat_name": "sales-ops",
-        "description": "Q4 sales support workspace",
         "created_at": "2026-11-11T10:00:00Z",
-        "updated_at": "2026-11-11T10:02:00Z",
         "last_message_preview": "How can we reduce churn?",
         "last_message_at": "2026-11-11T10:02:00Z"
       }
@@ -136,14 +141,15 @@ Response `200 OK`:
 }
 ```
 
-### `GET /chat`
+### `GET /chat/{id}`
 
-Requires query parameters `user_id` and `chat_id`. `limit` defaults to 25 and must be 1-100. `cursor` is opaque and, if present, comes from the previous response. Messages are returned oldest-to-newest within the selected page; pages continue toward older messages.
+Loads one chat record by numeric chat ID. Requires `user_id` as a query parameter and `X-Session-ID` as a header. Core checks Redis key `session:<X-Session-ID>` and verifies its value equals `user_id` before querying PostgreSQL. It runs a parameterized `SELECT * FROM core.chats WHERE id = $1`, then verifies the returned chat belongs to `user_id`; a chat owned by someone else is reported as `404`.
 
 Example:
 
 ```http
-GET /chat?user_id=42&chat_id=103&limit=25
+GET /chat/103?user_id=42
+X-Session-ID: session-abc
 ```
 
 Response `200 OK`:
@@ -152,39 +158,29 @@ Response `200 OK`:
 {
   "success": true,
   "data": {
-    "chat": {
-      "chat_id": 103,
-      "user_id": 42,
-      "chat_name": "sales-ops",
-      "description": "Q4 sales support workspace",
-      "created_at": "2026-11-11T10:00:00Z",
-      "updated_at": "2026-11-11T10:00:00Z"
-    },
-    "messages": [
-      {
-        "message_id": 9001,
-        "chat_id": 103,
-        "user_id": 42,
-        "role": "user",
-        "content": "How can we reduce churn?",
-        "created_at": "2026-11-11T10:01:00Z"
-      }
-    ],
-    "next_cursor": null
+    "chat_id": 103,
+    "user_id": 42,
+    "chat_name": "sales-ops",
+    "company_id": 7,
+    "created_at": "2026-11-11T10:00:00Z"
   }
 }
 ```
 
-### `PUT /chat`
+This endpoint returns chat metadata only. Message history pagination is part of the future chat-detail contract and is not implemented by this handler yet.
 
-Renames a chat. The new name is 1-80 characters and unique for that user.
+### `PUT /chat/{id}`
+
+Renames a chat owned by the authenticated user. Requires the `X-Session-ID` header and a matching `user_id` query parameter; Core verifies the session in Redis and updates only the row matching both chat ID and user ID. The new name is trimmed and must contain 1-80 characters.
 
 Request:
 
-```json
+```http
+PUT /chat/103?user_id=42
+X-Session-ID: session-abc
+Content-Type: application/json
+
 {
-  "user_id": 42,
-  "chat_id": 103,
   "new_chat_name": "sales-ops-q4"
 }
 ```
@@ -197,22 +193,23 @@ Response `200 OK`:
   "message": "chat renamed successfully",
   "data": {
     "chat_id": 103,
-    "chat_name": "sales-ops-q4"
+    "user_id": 42,
+    "company_id": null,
+    "chat_name": "sales-ops-q4",
+    "created_at": "2026-11-11T10:00:00Z"
   }
 }
 ```
 
-### `DELETE /chat`
+### `DELETE /chat/{id}`
 
-Deletes the chat and its messages. The MVP implementation should perform this atomically (for example, with a foreign key `ON DELETE CASCADE`).
+Deletes a chat owned by the authenticated user. Requires `user_id` as a query parameter and `X-Session-ID` as a header; Core validates the Redis session and deletes only the row matching both chat ID and user ID. A missing or unowned chat returns `404`. The database migration `000008_cascade_chat_message_delete` configures the message foreign key with `ON DELETE CASCADE`, so chat and messages are removed atomically by the database.
 
 Request:
 
-```json
-{
-  "user_id": 42,
-  "chat_id": 103
-}
+```http
+DELETE /chat/103?user_id=42
+X-Session-ID: session-abc
 ```
 
 Response `200 OK`:

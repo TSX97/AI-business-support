@@ -32,6 +32,11 @@ services:
       - redis_data:/data
     networks:
       - ai_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
   nats:
     image: nats:2.10-alpine
@@ -69,10 +74,13 @@ services:
       - "8081"
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB}
+      - REDIS_URL=redis://redis:6379/0
       - NATS_URL=nats://nats:4222
       - ENV=${ENV}
     depends_on:
       postgres:
+        condition: service_healthy
+      redis:
         condition: service_healthy
       nats:
         condition: service_started

@@ -36,6 +36,134 @@ paths:
               example:
                 status: healthy
 
+  /chat/{id}:
+    get:
+      summary: Get a chat by its numeric ID
+      description: Validates X-Session-ID in Redis and verifies that the chat belongs to user_id before returning it.
+      tags: [Chat]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+        - in: query
+          name: user_id
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+        - in: header
+          name: X-Session-ID
+          required: true
+          description: Redis session ID; Core reads session:<value> and checks that the stored user ID equals user_id.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+      responses:
+        '200':
+          description: Chat loaded
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatRecordResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    put:
+      summary: Rename a chat
+      description: Validates X-Session-ID in Redis and only updates a chat owned by user_id.
+      tags: [Chat]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+        - in: query
+          name: user_id
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+        - in: header
+          name: X-Session-ID
+          required: true
+          description: Redis session ID; Core reads session:<value> and checks the stored user ID against user_id.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRenameRequest'
+      responses:
+        '200':
+          description: Chat renamed
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatRenameResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+    delete:
+      summary: Delete a chat and its messages
+      description: Validates X-Session-ID in Redis and deletes only a chat owned by user_id. Messages are deleted by the database ON DELETE CASCADE constraint.
+      tags: [Chat]
+      parameters:
+        - in: path
+          name: id
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+        - in: query
+          name: user_id
+          required: true
+          schema:
+            $ref: '#/components/schemas/ID'
+        - in: header
+          name: X-Session-ID
+          required: true
+          description: Redis session ID; Core reads session:<value> and checks the stored user ID against user_id.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
+      responses:
+        '200':
+          description: Chat and its messages deleted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SuccessResponse'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '500':
+          $ref: '#/components/responses/InternalServerError'
+
   /chat:
     post:
       summary: Create a chat
@@ -61,104 +189,10 @@ paths:
           $ref: '#/components/responses/Conflict'
         '500':
           $ref: '#/components/responses/InternalServerError'
-    get:
-      summary: Get a chat and a page of its messages
-      tags: [Chat]
-      parameters:
-        - in: query
-          name: user_id
-          required: true
-          schema:
-            $ref: '#/components/schemas/ID'
-        - in: query
-          name: chat_id
-          required: true
-          schema:
-            $ref: '#/components/schemas/ID'
-        - in: query
-          name: limit
-          required: false
-          schema:
-            type: integer
-            minimum: 1
-            maximum: 100
-            default: 25
-        - in: query
-          name: cursor
-          required: false
-          description: Opaque cursor returned by the previous response.
-          schema:
-            type: string
-      responses:
-        '200':
-          description: Chat and messages loaded
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ChatDetailResponse'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalServerError'
-    put:
-      summary: Rename a chat
-      tags: [Chat]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ChatRenameRequest'
-      responses:
-        '200':
-          description: Chat renamed
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuccessResponse'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '409':
-          $ref: '#/components/responses/Conflict'
-        '500':
-          $ref: '#/components/responses/InternalServerError'
-    delete:
-      summary: Delete a chat and its messages
-      tags: [Chat]
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              $ref: '#/components/schemas/ChatDeleteRequest'
-      responses:
-        '200':
-          description: Chat deleted
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/SuccessResponse'
-        '400':
-          $ref: '#/components/responses/BadRequest'
-        '401':
-          $ref: '#/components/responses/Unauthorized'
-        '404':
-          $ref: '#/components/responses/NotFound'
-        '500':
-          $ref: '#/components/responses/InternalServerError'
-
   /chats:
     get:
       summary: List chats available to the authenticated user
-      description: Returns chats owned by the user, ordered by most recently updated first.
+      description: Returns chats owned by the user, newest chat ID first. The cursor is the ID of the last chat in the previous page.
       tags: [Chat]
       parameters:
         - in: query
@@ -166,6 +200,14 @@ paths:
           required: true
           schema:
             $ref: '#/components/schemas/ID'
+        - in: header
+          name: X-Session-ID
+          required: true
+          description: Redis session ID; Core reads session:<value> and checks the stored user ID against user_id.
+          schema:
+            type: string
+            minLength: 1
+            maxLength: 256
         - in: query
           name: limit
           required: false
@@ -527,21 +569,29 @@ components:
           additionalProperties: true
     ChatCreateRequest:
       type: object
-      required: [user_id, chat_name]
+      required: [user_id, session_id, chat_name]
       properties:
         user_id:
           $ref: '#/components/schemas/ID'
+        session_id:
+          type: string
+          minLength: 1
+          maxLength: 256
+          description: Opaque session ID. Core checks Redis key session:<session_id>; its value must equal user_id.
         chat_name:
           type: string
           minLength: 1
           maxLength: 80
-        description:
-          type: [string, 'null']
-          maxLength: 500
-        metadata:
-          type: object
-          additionalProperties: true
     ChatCreateResponse:
+      type: object
+      required: [success, data]
+      properties:
+        success:
+          type: boolean
+          const: true
+        data:
+          $ref: '#/components/schemas/ChatRecord'
+    ChatRecordResponse:
       type: object
       required: [success, data]
       properties:
@@ -552,16 +602,24 @@ components:
           $ref: '#/components/schemas/ChatRecord'
     ChatRenameRequest:
       type: object
-      required: [user_id, chat_id, new_chat_name]
+      required: [new_chat_name]
       properties:
-        user_id:
-          $ref: '#/components/schemas/ID'
-        chat_id:
-          $ref: '#/components/schemas/ID'
         new_chat_name:
           type: string
           minLength: 1
           maxLength: 80
+    ChatRenameResponse:
+      type: object
+      required: [success, message, data]
+      properties:
+        success:
+          type: boolean
+          const: true
+        message:
+          type: string
+          example: chat renamed successfully
+        data:
+          $ref: '#/components/schemas/ChatRecord'
     ChatDeleteRequest:
       type: object
       required: [user_id, chat_id]
@@ -749,20 +807,18 @@ components:
           $ref: '#/components/schemas/ID'
     ChatRecord:
       type: object
-      required: [chat_id, user_id, chat_name, description, created_at, updated_at]
+      required: [chat_id, user_id, chat_name, created_at]
       properties:
         chat_id:
           $ref: '#/components/schemas/ID'
         user_id:
           $ref: '#/components/schemas/ID'
+        company_id:
+          type: [integer, 'null']
+          format: int64
         chat_name:
-          type: string
-        description:
           type: [string, 'null']
         created_at:
-          type: string
-          format: date-time
-        updated_at:
           type: string
           format: date-time
     ChatMessageRecord:

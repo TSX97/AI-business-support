@@ -35,11 +35,11 @@ flowchart LR
 1. NGINX serves the frontend and terminates HTTPS connections from the browser.
 2. Frontend API requests pass through NGINX, which forwards them to Auth Service or Core Service over HTTP on the internal network.
 3. Auth Service, implemented in Python, uses PostgreSQL and Redis.
-4. Core Service, implemented in Go, uses PostgreSQL and publishes work/messages to NATS.
+4. Core Service, implemented in Go, uses PostgreSQL and publishes work/messages to NATS. Its startup currently also initializes a Redis client, but Core endpoints do not use Redis yet; Auth remains responsible for authentication/session state.
 5. AI Service, implemented in Python, receives messages from NATS.
 
 PostgreSQL is shared infrastructure, but each service should access data through its own domain and schema. Browser clients should not connect directly to backend services or infrastructure.
 
 ## Current scaffold status
 
-Core is implemented in Go, while Auth and AI are implemented in Python. The frontend uses Redux for client-side state. Backend functionality is still under active development; refer to the frontend API documentation for the current endpoint status.
+Core is implemented in Go with pgx and Redis clients initialized at startup, while Auth and AI are implemented in Python. The frontend uses Redux for client-side state. Backend functionality is still under active development; refer to the frontend API documentation for the current endpoint status.
