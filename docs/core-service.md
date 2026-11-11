@@ -5,12 +5,14 @@ This is the MVP contract for the Go Core Service. It defines the HTTP fields and
 ## Conventions and IDs
 
 - Every entity ID (`user_id`, `chat_id`, `message_id`, `business_id`) is a positive integer.
-- In PostgreSQL, store these IDs and their foreign keys as `BIGINT`; generate primary keys with `GENERATED ... AS IDENTITY`.
+- The current PostgreSQL schema stores these IDs and foreign keys as `INTEGER`/`SERIAL`; handlers reject values outside that range.
 - In Go, represent IDs as `int64`; send them in JSON as numbers, not quoted strings.
 - Do not use chat or business names as identifiers. Names are mutable display values; IDs are stable.
 - Timestamps are ISO 8601 UTC strings, for example `2026-11-11T10:00:00Z`.
 
 The intended API-wide auth scheme is `Authorization: Bearer <JWT>` (or the configured authenticated session cookie). The currently implemented chat routes use the Auth/Core Redis session contract instead: they require `user_id` and `X-Session-ID` (except `POST /chat`, which currently accepts `session_id` in its JSON body). Core validates `session:<session_id> -> <user_id>`; a mismatch returns `403 Forbidden`, and a missing/expired session returns `401 Unauthorized`.
+
+Business endpoints also use this Redis session contract and require `user_id` plus the `X-Session-ID` header.
 
 Success responses use JSON and generally have this shape:
 
@@ -50,7 +52,7 @@ Common statuses: `400` invalid input, `401` missing/invalid authentication, `403
 | `POST` | `/business` | Create a business |
 | `GET` | `/business` | List businesses owned by or shared with the user |
 | `PUT` | `/business` | Replace editable business fields |
-| `DELETE` | `/business` | Delete a business and its memberships |
+| `DELETE` | `/business` | Delete a business and clean up its company when unused |
 | `POST` | `/business/member` | Add a business member |
 | `DELETE` | `/business/member` | Remove a business member |
 
@@ -369,12 +371,13 @@ Core consumes these events, persists the assistant response/status in PostgreSQL
 
 ### `GET /business`
 
-Lists businesses the user owns or belongs to, most recently updated first. Uses cursor pagination; `limit` defaults to 25 and must be 1-100. `user_id` must match the authenticated user. Each returned `BusinessRecord.user_id` is the business owner's ID.
+Lists businesses the user owns or belongs to, most recently updated first. Uses cursor pagination; `limit` defaults to 25 and must be 1-100. `user_id` must match the authenticated user, and the request must include `X-Session-ID`. Each returned `BusinessRecord.user_id` is the business owner's ID.
 
 Example:
 
 ```http
 GET /business?user_id=42&limit=25
+X-Session-ID: session-abc
 ```
 
 Response `200 OK`:
@@ -405,6 +408,7 @@ Response `200 OK`:
 ### `POST /business`
 
 Creates a business and makes the authenticated user its owner. `business_name` is 1-120 characters; `description` is optional (maximum 1,000 characters); `business_data` is an optional JSON object that defaults to `{}`.
+The request must include the `X-Session-ID` header; Core verifies the Redis session maps to `user_id`.
 
 Request:
 
@@ -421,6 +425,14 @@ Request:
   }
 }
 ```
+
+The current database model maps this API resource onto the existing tables in one PostgreSQL statement:
+
+1. Insert the business name and description into `core.companies`.
+2. Insert the creator into `core.company_members` with role `owner`.
+3. Insert the JSON `business_data` into `core.business.data` with `data_type = 'company_profile'`.
+
+The API's `business_id` is `core.business.id`; the owner is read from the matching `core.company_members` row. No schema migration is required.
 
 Response `201 Created`:
 
@@ -447,6 +459,7 @@ Response `201 Created`:
 ### `PUT /business`
 
 Replaces the business's editable fields. All fields shown are required so a client cannot accidentally clear data by omitting it. To clear `description`, send `null`; to clear structured data, send `{}`. Only the business owner may update it. The owner ID itself cannot be changed through this endpoint.
+The request must include `X-Session-ID`. The implementation updates `core.companies.name` and `core.companies.description`, and updates the matching `core.business.data` JSONB profile and `updated_at`.
 
 Request:
 
@@ -467,7 +480,7 @@ Response `200 OK`: same `BusinessResponse` shape as `POST /business`, containing
 
 ### `DELETE /business`
 
-Deletes the business and its membership rows. It does not delete chats or messages. Only the owner may delete the business.
+Requires `X-Session-ID`; only the owner may delete the business. Using the current schema, Core deletes the business profile. If it was the last profile for the company, Core also deletes its membership rows, sets existing chats' `company_id` to `NULL`, then deletes the company row in the same SQL statement. If other business profiles still reference the company, their memberships, chats, and company row are retained. Chats and messages themselves are never deleted. No foreign-key migration is needed.
 
 Request:
 
@@ -493,6 +506,7 @@ Response `200 OK`:
 ### `POST /business/member`
 
 Adds a user to the business. Only the business owner can add members in the MVP. The role defaults to `member`; `admin` may be assigned, but does not grant owner-only business update/delete permissions.
+Requires the `X-Session-ID` header.
 
 Request:
 
@@ -510,6 +524,7 @@ Adding an existing member returns `409 Conflict`; a non-existent business or tar
 ### `DELETE /business/member`
 
 Removes a member. Only the owner can remove other members. The owner cannot remove themselves through this endpoint; delete the business to remove the owner relationship.
+Requires the `X-Session-ID` header.
 
 Request:
 

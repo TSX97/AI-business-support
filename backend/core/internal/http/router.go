@@ -45,5 +45,12 @@ func NewRouter(dependencies Dependencies) *gin.Engine {
 	router.DELETE("/chat/:id", api.deleteChat)
 	router.GET("/chats", api.listChats)
 
+	router.POST("/business", api.createBusiness)
+	router.GET("/business", api.listBusinesses)
+	router.PUT("/business", api.updateBusiness)
+	router.DELETE("/business", api.deleteBusiness)
+	router.POST("/business/member", api.addBusinessMember)
+	router.DELETE("/business/member", api.removeBusinessMember)
+
 	return router
 }

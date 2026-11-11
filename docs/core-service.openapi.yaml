@@ -4,7 +4,7 @@ info:
   version: 0.4.0
   description: |
     MVP contract for the Go Core Service.
-    Entity IDs are positive PostgreSQL BIGINT values represented as JSON integers.
+    Entity IDs are positive PostgreSQL INTEGER values represented as JSON integers.
     The Core Service stores domain data in PostgreSQL, publishes AI work to NATS JetStream,
     and streams AI response events to clients over SSE.
 
@@ -318,6 +318,9 @@ paths:
     post:
       summary: Create a business
       tags: [Business]
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
       requestBody:
         required: true
         content:
@@ -341,7 +344,9 @@ paths:
       summary: List businesses available to the authenticated user
       description: Returns businesses owned by or shared with the user, ordered by most recently updated first.
       tags: [Business]
+      security: []
       parameters:
+        - $ref: '#/components/parameters/SessionID'
         - in: query
           name: user_id
           required: true
@@ -378,6 +383,9 @@ paths:
       summary: Update a business
       description: Replaces the editable business fields. The owner is not changed.
       tags: [Business]
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
       requestBody:
         required: true
         content:
@@ -403,8 +411,11 @@ paths:
           $ref: '#/components/responses/InternalServerError'
     delete:
       summary: Delete a business
-      description: Deletes the business and its membership rows. Does not delete chats or messages.
+      description: Deletes the business profile. If it was the last profile for the company, Core also deletes memberships, detaches existing chats, and removes the company row. Otherwise, those shared company resources are retained.
       tags: [Business]
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
       requestBody:
         required: true
         content:
@@ -433,6 +444,9 @@ paths:
     post:
       summary: Add a user to a business
       tags: [Business]
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
       requestBody:
         required: true
         content:
@@ -461,6 +475,9 @@ paths:
     delete:
       summary: Remove a user from a business
       tags: [Business]
+      security: []
+      parameters:
+        - $ref: '#/components/parameters/SessionID'
       requestBody:
         required: true
         content:
@@ -486,6 +503,16 @@ paths:
           $ref: '#/components/responses/InternalServerError'
 
 components:
+  parameters:
+    SessionID:
+      in: header
+      name: X-Session-ID
+      required: true
+      description: Redis session ID; Core reads session:<value> and checks the stored user ID against user_id.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 256
   securitySchemes:
     bearerAuth:
       type: http
@@ -531,9 +558,10 @@ components:
   schemas:
     ID:
       type: integer
-      format: int64
+      format: int32
       minimum: 1
-      description: Positive PostgreSQL BIGINT identifier.
+      maximum: 2147483647
+      description: Positive PostgreSQL INTEGER identifier.
       example: 123
     ApiError:
       type: object
