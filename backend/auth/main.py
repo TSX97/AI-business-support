@@ -1,15 +1,23 @@
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI
 
-app = FastAPI()
+from db import close_db
+from routes import router
 
-@app.get("/")
-async def root():
-    return {"status": "ok", "service": "auth"}
 
-@app.get("/health")
-async def health():
-    return {"status": "healthy"}
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    yield
+    await close_db()
 
-@app.post("/api")
-async def api():
-    return {"message": "Hello from Auth service!"}
+
+app = FastAPI(
+    title="Auth Service",
+    description="User registration and authentication service",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+
+app.include_router(router)
